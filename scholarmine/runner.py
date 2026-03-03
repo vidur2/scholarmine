@@ -35,6 +35,8 @@ DEFAULT_MAX_RETRIES = 5
 SCRAPE_ATTEMPT_TIMEOUT_SECONDS = 240
 MAX_IP_RETRIES = 10
 STALE_PROGRESS_TIMEOUT_SECONDS = 600
+MAX_STALE_RESTARTS = 3
+TOR_RESTART_DELAY_SECONDS = 5
 
 
 class CSVResearcherRunner:
@@ -814,13 +816,16 @@ class CSVResearcherRunner:
         researchers_data: dict[str, str],
         results: dict,
         successful_researchers: set,
-    ) -> None:
+    ) -> bool:
         """Process researchers using continuous queue-based approach.
 
         Args:
             researchers_data: Dictionary mapping names to Scholar IDs.
             results: Shared results dictionary.
             successful_researchers: Set of successfully processed researchers.
+
+        Returns:
+            True if exited due to stale progress (eligible for restart), False otherwise.
         """
         logger.info(
             f"QUEUE-BASED PROCESSING: Starting {len(researchers_data)} researchers "
@@ -849,6 +854,7 @@ class CSVResearcherRunner:
         last_progress_time = time.time()
         last_activity_time = time.time()
         last_known_successes = 0
+        stale_exit = False
         while True:
             time.sleep(MAIN_LOOP_SLEEP_SECONDS)
 
@@ -882,6 +888,7 @@ class CSVResearcherRunner:
                     f"No new successes in {STALE_PROGRESS_TIMEOUT_SECONDS}s, "
                     "threads appear stuck — forcing exit"
                 )
+                stale_exit = True
                 break
 
         logger.info("Waiting for worker threads to finish...")
@@ -904,6 +911,8 @@ class CSVResearcherRunner:
         with self.print_lock:
             logger.info("Queue processing completed!")
             self.ip_tracker.save_to_file()
+
+        return stale_exit
 
     def process_researchers_from_csv(self) -> dict:
         """Process researchers from CSV file using continuous queue-based approach.
@@ -960,9 +969,40 @@ class CSVResearcherRunner:
         if self.continue_mode:
             successful_researchers.update(self.progress_data.get("success", []))
 
-        self._process_researchers_with_queue(
-            researchers_data, results, successful_researchers
-        )
+        for restart_num in range(MAX_STALE_RESTARTS + 1):
+            remaining = {
+                name: sid
+                for name, sid in researchers_data.items()
+                if name not in successful_researchers
+            }
+            if not remaining:
+                break
+
+            if restart_num > 0:
+                logger.info(
+                    f"STALE RESTART {restart_num}/{MAX_STALE_RESTARTS}: "
+                    f"Restarting Tor and retrying {len(remaining)} researchers..."
+                )
+                self.stop_tor_service()
+                time.sleep(TOR_RESTART_DELAY_SECONDS)
+                if not self.start_tor_service():
+                    logger.error("Failed to restart Tor after stale progress, giving up")
+                    break
+                with self._active_workers_lock:
+                    self._active_workers = 0
+                self.researcher_queue = queue.Queue()
+
+            stale_exit = self._process_researchers_with_queue(
+                remaining, results, successful_researchers
+            )
+
+            if not stale_exit:
+                break
+
+            if restart_num >= MAX_STALE_RESTARTS:
+                logger.warning(
+                    f"Exhausted all {MAX_STALE_RESTARTS} stale restarts, giving up"
+                )
 
         logger.info("CSV SESSION COMPLETED - FINAL PROGRESS")
         self.print_current_progress()

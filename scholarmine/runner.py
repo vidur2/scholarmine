@@ -1046,12 +1046,11 @@ class CSVResearcherRunner:
 
             with open(failed_csv_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow(["name", "scholar_id", "google_scholar_url"])
+                writer.writerow(["name", "google_scholar_url"])
                 for name, scholar_id in failed_researchers.items():
                     writer.writerow(
                         [
                             name,
-                            scholar_id,
                             (
                                 "https://scholar.google.com/citations?user="
                                 f"{scholar_id}&hl=en"

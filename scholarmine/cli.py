@@ -118,7 +118,7 @@ Examples:
             max_retries=args.max_retries,
         )
 
-        _, unsucsessful_reserachers = runner.process_researchers_from_csv()
+        runner.process_researchers_from_csv()
 
 
         print("\nCSV scraping session completed!")

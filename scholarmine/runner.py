@@ -16,6 +16,7 @@ import threading
 import time
 import types
 from datetime import datetime
+from typing import Tuple
 
 from .ip_tracker import IPTracker
 from .scraper import TorScholarSearch
@@ -37,6 +38,7 @@ MAX_IP_RETRIES = 10
 STALE_PROGRESS_TIMEOUT_SECONDS = 600
 MAX_STALE_RESTARTS = 3
 TOR_RESTART_DELAY_SECONDS = 5
+FAILED_RESEARCHERS_CSV_FILENAME = "failed_researchers.csv"
 
 
 class CSVResearcherRunner:
@@ -914,7 +916,7 @@ class CSVResearcherRunner:
 
         return stale_exit
 
-    def process_researchers_from_csv(self) -> dict:
+    def process_researchers_from_csv(self) -> Tuple[dict, dict]:
         """Process researchers from CSV file using continuous queue-based approach.
 
         Returns:
@@ -965,6 +967,7 @@ class CSVResearcherRunner:
 
         results: dict = {}
         successful_researchers: set = set()
+        
 
         if self.continue_mode:
             successful_researchers.update(self.progress_data.get("success", []))
@@ -1003,6 +1006,14 @@ class CSVResearcherRunner:
                 logger.warning(
                     f"Exhausted all {MAX_STALE_RESTARTS} stale restarts, giving up"
                 )
+        unsucsessful_reserachers = {
+            name: sid
+            for name, sid in researchers_data.items()
+            if name not in successful_researchers
+        }
+
+        if unsucsessful_reserachers:
+            self._write_failed_researchers_csv(unsucsessful_reserachers)
 
         logger.info("CSV SESSION COMPLETED - FINAL PROGRESS")
         self.print_current_progress()
@@ -1012,7 +1023,50 @@ class CSVResearcherRunner:
 
         self.stop_tor_service()
 
-        return results
+        return results, unsucsessful_reserachers
+
+    def _write_failed_researchers_csv(
+        self,
+        failed_researchers: dict[str, str],
+    ) -> str | None:
+        """Write failed researchers to a CSV file in the output directory.
+
+        Args:
+            failed_researchers: Dictionary mapping researcher names to Scholar IDs.
+
+        Returns:
+            Path to the written CSV file, or None if writing failed.
+        """
+        try:
+            os.makedirs(self.output_dir, exist_ok=True)
+            failed_csv_path = os.path.join(
+                self.output_dir,
+                FAILED_RESEARCHERS_CSV_FILENAME,
+            )
+
+            with open(failed_csv_path, "w", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                writer.writerow(["name", "scholar_id", "google_scholar_url"])
+                for name, scholar_id in failed_researchers.items():
+                    writer.writerow(
+                        [
+                            name,
+                            scholar_id,
+                            (
+                                "https://scholar.google.com/citations?user="
+                                f"{scholar_id}&hl=en"
+                            ),
+                        ]
+                    )
+
+            logger.info(
+                f"Wrote {len(failed_researchers)} failed researchers to "
+                f"{failed_csv_path}"
+            )
+            return failed_csv_path
+        except Exception as e:
+            logger.error(f"Failed to write failed researchers CSV: {e}")
+            return None
 
     def _print_final_summary(
         self,

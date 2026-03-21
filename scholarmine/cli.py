@@ -120,6 +120,7 @@ Examples:
 
         runner.process_researchers_from_csv()
 
+
         print("\nCSV scraping session completed!")
 
     except KeyboardInterrupt:
